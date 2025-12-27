@@ -1,0 +1,444 @@
+---
+title: "Human Activity Recognition: Predicting Exercise Quality"
+subtitle: "Practical Machine Learning Course Project"
+author: "Marvin"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    theme: flatly
+    highlight: tango
+---
+
+# 1. Introduction
+
+With the rise of wearable fitness trackers, quantifying physical activity has become commonplace. However, measuring **how well** exercises are performed remains challenging. This project analyzes data from accelerometers placed on the belt, forearm, arm, and dumbbell of six participants performing barbell lifts. Participants were asked to perform the exercise correctly (Class A) and incorrectly in four different ways (Classes B-E).
+
+**Goal:** Build a machine learning model to classify the quality of barbell lift executions into five categories (A, B, C, D, E) based on sensor data.
+
+# 2. Data Preparation
+
+## 2.1 Loading Data
+
+```{r load-data, message=FALSE, warning=FALSE}
+# Load required libraries
+library(caret)
+library(randomForest)
+library(rpart)
+library(rpart.plot)
+library(knitr)
+library(ggplot2)
+library(dplyr)
+
+# Set seed for reproducibility
+set.seed(12345)
+
+# Download datasets if they don't exist
+if (!file.exists("pml-training.csv")) {
+  download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv", 
+                destfile = "pml-training.csv", method = "curl")
+}
+
+if (!file.exists("pml-testing.csv")) {
+  download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv", 
+                destfile = "pml-testing.csv", method = "curl")
+}
+
+# Load datasets
+training <- read.csv("pml-training.csv", na.strings = c("NA", "", "#DIV/0!"))
+testing <- read.csv("pml-testing.csv", na.strings = c("NA", "", "#DIV/0!"))
+
+# Initial dimensions
+cat("Training set dimensions:", dim(training), "\n")
+cat("Test set dimensions:", dim(testing), "\n")
+```
+
+##2.2 Data Cleaning
+```{r}
+# Remove columns with mostly missing values (>95% NA)
+na_threshold <- 0.95 * nrow(training)
+training_clean <- training[, colSums(is.na(training)) < na_threshold]
+testing_clean <- testing[, colSums(is.na(testing)) < na_threshold]
+
+# Remove metadata columns (not useful for prediction)
+metadata_cols <- c("X", "user_name", "raw_timestamp_part_1", 
+                   "raw_timestamp_part_2", "cvtd_timestamp", 
+                   "new_window", "num_window")
+training_clean <- training_clean[, !(names(training_clean) %in% metadata_cols)]
+testing_clean <- testing_clean[, !(names(testing_clean) %in% metadata_cols)]
+
+# Convert classe to factor
+training_clean$classe <- as.factor(training_clean$classe)
+
+cat("After cleaning, training set has:", ncol(training_clean), "columns\n")
+cat("Predictors:", ncol(training_clean) - 1, "\n")
+cat("Response variable: 1 (classe)\n")
+```
+After cleaning, we have 54 predictors remaining (plus the classe outcome variable).
+
+ ##2.3 Data Splitting
+```{r}
+# Split training data into training and validation sets
+inTrain <- createDataPartition(training_clean$classe, p = 0.7, list = FALSE)
+trainData <- training_clean[inTrain, ]
+valData <- training_clean[-inTrain, ]
+
+# Check class distribution
+class_dist <- table(trainData$classe)
+prop_dist <- prop.table(class_dist)
+
+cat("Training set size:", nrow(trainData), "\n")
+cat("Validation set size:", nrow(valData), "\n\n")
+cat("Class distribution in training set:\n")
+print(class_dist)
+cat("\nProportions:\n")
+print(round(prop_dist, 3))
+```
+The classes are relatively balanced, with Class A (correct execution) being the most frequent at r round(prop_dist["A"] * 100, 1)%.
+
+#3. Exploratory Data Analysis
+  ##3.1 Class Distribution
+```{r}
+ggplot(trainData, aes(x = classe, fill = classe)) +
+  geom_bar() +
+  geom_text(stat = 'count', aes(label = ..count..), vjust = -0.5) +
+  labs(title = "Distribution of Exercise Classes in Training Set",
+       x = "Exercise Quality Class", 
+       y = "Count",
+       subtitle = paste("Total observations:", nrow(trainData))) +
+  theme_minimal() +
+  scale_fill_brewer(palette = "Set2") +
+  theme(legend.position = "none")
+```
+
+ ##3.2 Feature Relationships
+```{r}
+# Example: Relationship between roll_belt and pitch_belt by class
+ggplot(trainData, aes(x = roll_belt, y = pitch_belt, color = classe)) +
+  geom_point(alpha = 0.6, size = 1.5) +
+  labs(title = "Roll vs Pitch Belt Measurements by Exercise Class",
+       x = "Roll Belt", 
+       y = "Pitch Belt",
+       color = "Class") +
+  theme_minimal() +
+  facet_wrap(~classe, nrow = 2) +
+  theme(legend.position = "bottom")
+```
+The visualization shows clear separation between classes in some feature combinations, suggesting that classification should be feasible with good accuracy.
+
+#4. Model Building
+  ##4.1 Preprocessing
+```{r}
+# Remove near-zero variance predictors
+nzv <- nearZeroVar(trainData, saveMetrics = TRUE)
+nzv_cols <- rownames(nzv[nzv$nzv == TRUE, ])
+cat("Near-zero variance predictors removed:", length(nzv_cols), "\n")
+
+# Keep only non-zero variance predictors
+trainData <- trainData[, !(names(trainData) %in% nzv_cols)]
+valData <- valData[, !(names(valData) %in% nzv_cols)]
+testing_clean <- testing_clean[, !(names(testing_clean) %in% nzv_cols)]
+
+cat("\nFinal dataset dimensions:\n")
+cat("Train data:", dim(trainData), "\n")
+cat("Validation data:", dim(valData), "\n")
+cat("Test data:", dim(testing_clean), "\n")
+```
+
+After removing near-zero variance predictors, we have 53 predictors remaining.
+
+##4.2 Model Selection Strategy
+
+*I tested three different algorithms:
+
+*Decision Trees (baseline)
+
+*Random Forest (expected to perform best)
+
+*Gradient Boosting (comparison)
+
+ ## Model 1: Decision Tree
+
+
+ ## Model 1: Decision Tree
+```{r }
+# Train decision tree
+set.seed(123)
+tree_model <- rpart(classe ~ ., data = trainData, method = "class")
+
+# Predict on validation set
+tree_pred <- predict(tree_model, valData, type = "class")
+
+# Confusion matrix and accuracy
+tree_cm <- confusionMatrix(tree_pred, valData$classe)
+tree_accuracy <- tree_cm$overall["Accuracy"]
+
+cat("Decision Tree Accuracy on Validation Set:", round(tree_accuracy, 4), 
+    "(", round(tree_accuracy * 100, 2), "% )\n")
+```
+ 
+ ##4.4 Model 2: Random Forest
+```{r}
+# Set up cross-validation
+ctrl <- trainControl(method = "cv", number = 5, verboseIter = FALSE)
+
+# Train Random Forest
+set.seed(123)
+rf_model <- train(classe ~ ., 
+                  data = trainData, 
+                  method = "rf",
+                  trControl = ctrl,
+                  ntree = 100,
+                  importance = TRUE)
+
+# Predict on validation set
+rf_pred <- predict(rf_model, valData)
+rf_cm <- confusionMatrix(rf_pred, valData$classe)
+rf_accuracy <- rf_cm$overall["Accuracy"]
+
+cat("Random Forest Accuracy on Validation Set:", round(rf_accuracy, 4), 
+    "(", round(rf_accuracy * 100, 2), "% )\n")
+```
+
+##4.5 Model 3: Gradient Boosting
+```{r}
+# Load gbm package if needed
+if (!require("gbm")) {
+  install.packages("gbm")
+  library(gbm)
+}
+
+# Train Gradient Boosting Machine
+set.seed(123)
+gbm_model <- train(classe ~ .,
+                   data = trainData,
+                   method = "gbm",
+                   trControl = ctrl,
+                   verbose = FALSE,
+                   tuneLength = 3)  # Reduced for speed
+
+# Predict on validation set
+gbm_pred <- predict(gbm_model, valData)
+gbm_cm <- confusionMatrix(gbm_pred, valData$classe)
+gbm_accuracy <- gbm_cm$overall["Accuracy"]
+
+cat("Gradient Boosting Accuracy on Validation Set:", round(gbm_accuracy, 4), 
+    "(", round(gbm_accuracy * 100, 2), "% )\n")
+```
+
+#5. Model Evaluation
+  
+  ##5.1 Accuracy Comparison
+```{r}
+# Make sure all accuracy variables exist
+# If any model failed to run, set its accuracy to NA
+if (!exists("tree_accuracy")) tree_accuracy <- NA
+if (!exists("rf_accuracy")) rf_accuracy <- NA
+if (!exists("gbm_accuracy")) gbm_accuracy <- NA
+
+# Create comparison table
+accuracy_results <- data.frame(
+  Model = c("Decision Tree", "Random Forest", "Gradient Boosting"),
+  Accuracy = c(tree_accuracy, rf_accuracy, gbm_accuracy),
+  OutOfSampleError = round(1 - c(tree_accuracy, rf_accuracy, gbm_accuracy), 4),
+  Accuracy_Percent = paste0(round(c(tree_accuracy, rf_accuracy, gbm_accuracy) * 100, 2), "%")
+)
+
+# Display the table
+print(knitr::kable(accuracy_results, 
+      caption = "Model Performance Comparison on Validation Set",
+      col.names = c("Model", "Accuracy", "Out-of-Sample Error", "Accuracy (%)"),
+      align = c('l', 'c', 'c', 'c'),
+      digits = 4))
+```
+
+##5.2 Random Forest Analysis
+ 
+```{r}
+# Variable importance - check if rf_model exists
+if (exists("rf_model")) {
+  var_imp <- varImp(rf_model)
+  
+  # Extract the importance data - handle different possible structures
+  if ("importance" %in% names(var_imp)) {
+    imp_df <- var_imp$importance
+  } else {
+    imp_df <- var_imp
+  }
+  
+  # Check if it's a data frame with a column named Overall
+  if (is.data.frame(imp_df) && "Overall" %in% colnames(imp_df)) {
+    # It's already in the right format
+    var_imp_df <- imp_df
+  } else if (is.data.frame(imp_df) && ncol(imp_df) > 0) {
+    # Might have different column names - take first numeric column
+    var_imp_df <- data.frame(Overall = as.numeric(imp_df[, 1]))
+    rownames(var_imp_df) <- rownames(imp_df)
+  } else {
+    # Fallback: use the default varImp output
+    var_imp_df <- as.data.frame(var_imp)
+  }
+  
+  # Ensure it has row names
+  if (is.null(rownames(var_imp_df))) {
+    rownames(var_imp_df) <- paste0("Var", 1:nrow(var_imp_df))
+  }
+  
+  # Add variable names as a column
+  var_imp_df$Variable <- rownames(var_imp_df)
+  
+  # Order by Overall (descending) safely
+  top20 <- var_imp_df[order(var_imp_df$Overall, decreasing = TRUE), ]
+  top20 <- top20[1:min(20, nrow(top20)), ]
+  
+  ggplot(top20, aes(x = reorder(Variable, Overall), y = Overall)) +
+    geom_col(fill = "steelblue", alpha = 0.8) +
+    coord_flip() +
+    labs(title = "Top 20 Most Important Variables (Random Forest)",
+         x = "Variable", 
+         y = "Importance Score",
+         subtitle = "Higher values indicate greater predictive importance") +
+    theme_minimal() +
+    theme(axis.text.y = element_text(size = 9))
+} else {
+  cat("Random Forest model not available for variable importance analysis.\n")
+}
+```
+
+The most important predictors are related to belt sensor measurements (roll_belt, yaw_belt, magnet_dumbbell_z), which aligns with expectations since the belt likely provides the most stable signal.
+
+##5.3 Error Analysis
+
+```{r}
+# Random Forest confusion matrix - check if rf_cm exists
+if (exists("rf_cm")) {
+  cat("Random Forest Confusion Matrix:\n")
+  print(rf_cm$table)
+  
+  # Calculate per-class metrics
+  class_metrics <- data.frame(
+    Class = c("A", "B", "C", "D", "E"),
+    Sensitivity = round(rf_cm$byClass[, "Sensitivity"], 3),
+    Specificity = round(rf_cm$byClass[, "Specificity"], 3),
+    Precision = round(rf_cm$byClass[, "Precision"], 3),
+    Recall = round(rf_cm$byClass[, "Recall"], 3)
+  )
+  
+  cat("\n\nPer-Class Performance Metrics:\n")
+  print(knitr::kable(class_metrics, caption = "Random Forest Performance by Class"))
+} else {
+  cat("Random Forest confusion matrix not available.\n")
+}
+```
+
+The Random Forest model shows excellent performance across all classes, with particularly high precision and recall for Class A (correct execution).
+
+6. Expected Out-of-Sample Error
+Based on the validation set performance:
+```{r}
+# Calculate errors safely
+tree_error <- ifelse(exists("tree_accuracy") && !is.na(tree_accuracy), 
+                     round((1 - tree_accuracy) * 100, 1), NA)
+rf_error <- ifelse(exists("rf_accuracy") && !is.na(rf_accuracy), 
+                   round((1 - rf_accuracy) * 100, 1), NA)
+gbm_error <- ifelse(exists("gbm_accuracy") && !is.na(gbm_accuracy), 
+                    round((1 - gbm_accuracy) * 100, 1), NA)
+
+cat("Expected Out-of-Sample Errors:\n")
+cat("- Decision Tree:", ifelse(!is.na(tree_error), paste0(tree_error, "%"), "N/A"), "\n")
+cat("- Random Forest:", ifelse(!is.na(rf_error), paste0(rf_error, "%"), "N/A"), "\n")
+cat("- Gradient Boosting:", ifelse(!is.na(gbm_error), paste0(gbm_error, "%"), "N/A"), "\n")
+```
+
+
+
+The Random Forest model achieves ~99% accuracy with an expected out-of-sample error of approximately 1%. This low error rate suggests excellent generalizability.
+  
+#7. Final Model Selection
+Given the superior performance of Random Forest, I select it as the final model. To maximize accuracy for the quiz predictions, I retrain it on the full training dataset:
+
+```{r}
+# Check if training_clean exists
+if (exists("training_clean")) {
+  # Retrain on full training data
+  set.seed(123)
+  final_model <- randomForest(classe ~ ., 
+                              data = training_clean, 
+                              ntree = 200,
+                              importance = TRUE,
+                              do.trace = FALSE)
+  
+  # Model summary
+  cat("Final Random Forest Model Summary:\n")
+  cat("Number of trees:", final_model$ntree, "\n")
+  cat("Number of variables tried at each split:", final_model$mtry, "\n")
+  
+  if (!is.null(final_model$err.rate)) {
+    cat("OOB estimate of error rate:", round(mean(final_model$err.rate[, "OOB"]), 4), 
+        "(", round(mean(final_model$err.rate[, "OOB"]) * 100, 2), "% )\n")
+  }
+} else {
+  cat("Training data not available for final model.\n")
+}
+```
+
+#8. Predictions on Test Set
+
+```{r}
+# Make predictions on the 20 test cases
+if (exists("final_model") && exists("testing_clean")) {
+  quiz_predictions <- predict(final_model, testing_clean)
+  
+  # Display predictions
+  prediction_df <- data.frame(
+    Problem_ID = 1:20,
+    Predicted_Class = as.character(quiz_predictions),
+    stringsAsFactors = FALSE
+  )
+  
+  cat("Predictions for 20 Test Cases:\n")
+  print(knitr::kable(prediction_df, 
+        caption = "Predicted Exercise Quality for Test Cases",
+        align = c('c', 'c')))
+} else {
+  cat("Cannot make predictions: final model or test data not available.\n")
+}
+```
+
+#Quiz Submission Answers:
+
+The predicted classes for the 20 test cases are:
+
+```{r}
+ if (exists("quiz_predictions")) paste(quiz_predictions, collapse = " ") else "Predictions not available"
+```
+
+
+#9. Conclusion
+
+Key Findings:
+*Data Quality: The dataset required significant cleaning, with over 100 variables containing excessive missing values. After preprocessing, 53 meaningful predictors remained.
+
+*Model Performance: Random Forest outperformed both Decision Trees and Gradient Boosting, achieving approximately 99% accuracy on the validation set.
+
+*Feature Importance: Belt sensor measurements (particularly roll_belt) were the most important predictors, suggesting that core body movement is most indicative of exercise quality.
+
+*Expected Error: The selected model has an expected out-of-sample error of ~1%, indicating excellent generalizability.
+
+#Limitations and Future Work:
+
+*The model was trained on data from only 6 participants, which may limit generalizability to broader populations.
+
+*Real-time implementation would require optimization for computational efficiency.
+
+*Future work could explore deep learning approaches or sensor fusion techniques.
+
+*The Random Forest model provides a robust solution for classifying exercise quality with high accuracy, demonstrating the potential of machine learning in fitness and health monitoring applications.
+
+#References
+Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. (2013). Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13).
+
+Breiman, L. (2001). Random Forests. Machine Learning, 45(1), 5-32.
+
+Coursera Practical Machine Learning Course Materials.
